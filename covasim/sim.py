@@ -236,7 +236,7 @@ class Sim(cvb.BaseSim):
                 raise ValueError(errormsg)
 
         # Handle population data
-        popdata_choices = ['random', 'hybrid', 'clustered', 'synthpops']
+        popdata_choices = ['random', 'hybrid', 'hybrid2','clustered', 'synthpops'] #Brian added hybrid2 to test sa-algorithm
         choice = self['pop_type']
         if choice and choice not in popdata_choices:
             choicestr = ', '.join(popdata_choices)

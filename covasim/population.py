@@ -63,7 +63,7 @@ def make_people(sim, save_pop=False, popfile=None, verbose=None, die=True, reset
         sim.popdict = None # Once loaded, remove
     else:
         # Create the population
-        if pop_type in ['random', 'clustered', 'hybrid']:
+        if pop_type in ['random', 'clustered', 'hybrid', 'hybrid2']:
             popdict = make_randpop(sim, microstructure=pop_type)
         elif pop_type == 'synthpops':
             popdict = make_synthpop(sim)
@@ -148,6 +148,7 @@ def make_randpop(sim, use_age_data=True, use_household_data=True, sex_ratio=0.5,
     # Handle sexes and ages
     uids           = np.arange(pop_size, dtype=cvd.default_int)
     sexes          = np.random.binomial(1, sex_ratio, pop_size)
+    loc_types = np.random.choice(['1', '2', '3', '4'], pop_size, p=cvd.loc_type_data) #Brian - incllude location type as attribute of agent at creation
     age_data_min   = age_data[:,0]
     age_data_max   = age_data[:,1] + 1 # Since actually e.g. 69.999
     age_data_range = age_data_max - age_data_min
@@ -161,11 +162,13 @@ def make_randpop(sim, use_age_data=True, use_household_data=True, sex_ratio=0.5,
     popdict['uid'] = uids
     popdict['age'] = ages
     popdict['sex'] = sexes
+    popdict['loc_type'] = loc_types # Brian
 
     # Actually create the contacts
     if   microstructure == 'random':    contacts, layer_keys    = make_random_contacts(pop_size, sim['contacts'])
     elif microstructure == 'clustered': contacts, layer_keys, _ = make_microstructured_contacts(pop_size, sim['contacts'])
     elif microstructure == 'hybrid':    contacts, layer_keys, _ = make_hybrid_contacts(pop_size, ages, sim['contacts'])
+    elif microstructure == 'hybrid2':   contacts, layer_keys    = make_layered_contacts(pop_size, cvd.layered_contacts, loc_types, uids) #BRIAN
     else:
         errormsg = f'Microstructure type "{microstructure}" not found; choices are random, clustered, or hybrid'
         raise NotImplementedError(errormsg)
@@ -372,3 +375,89 @@ def make_synthpop(sim, generate=True, layer_mapping=None, **kwargs):
     popdict['layer_keys'] = list(layer_mapping.values())
 
     return popdict
+
+
+def make_hybrid2_contacts(pop_size, ages, contacts, school_ages=None, work_ages=None):
+    '''
+    Create "hybrid" contacts -- microstructured contacts for households and
+    random contacts for schools and workplaces, both of which have extremely
+    basic age structure. A combination of both make_random_contacts() and
+    make_microstructured_contacts().
+    '''
+
+    # Handle inputs and defaults
+    layer_keys = ['h', 's', 'w', 'c']
+    contacts = sc.mergedicts({'h':4, 's':20, 'w':20, 'c':20}, contacts) # Ensure essential keys are populated
+    if school_ages is None:
+        school_ages = [6, 22]
+    if work_ages is None:
+        work_ages   = [22, 65]
+
+    # Create the empty contacts list -- a list of {'h':[], 's':[], 'w':[]}
+    contacts_list = [{key:[] for key in layer_keys} for i in range(pop_size)]
+
+    # Start with the household contacts for each person
+    h_contacts, _, clusters = make_layered_contacts(pop_size, cvd.layered_contacts, loc_types, uids)
+
+    # Make community contacts
+    c_contacts, _ = make_random_contacts(pop_size, {'c':contacts['c']})
+
+    # Get the indices of people in each age bin
+    ages = np.array(ages)
+    s_inds = sc.findinds((ages >= school_ages[0]) * (ages < school_ages[1]))
+    w_inds = sc.findinds((ages >= work_ages[0])   * (ages < work_ages[1]))
+
+    # Create the school and work contacts for each person
+    s_contacts, _ = make_random_contacts(len(s_inds), {'s':contacts['s']})
+    w_contacts, _ = make_random_contacts(len(w_inds), {'w':contacts['w']})
+
+    # Construct the actual lists of contacts
+    for i     in range(pop_size):   contacts_list[i]['h']   =        h_contacts[i]['h']  # Copy over household contacts -- present for everyone
+    for i,ind in enumerate(s_inds): contacts_list[ind]['s'] = s_inds[s_contacts[i]['s']] # Copy over school contacts
+    for i,ind in enumerate(w_inds): contacts_list[ind]['w'] = w_inds[w_contacts[i]['w']] # Copy over work contacts
+    for i     in range(pop_size):   contacts_list[i]['c']   =        c_contacts[i]['c']  # Copy over community contacts -- present for everyone
+
+    return contacts_list, layer_keys, clusters
+
+#************************BRIAN CUSTOM FUNCTION**************************************************
+def make_layered_contacts(pop_size, contacts, loc_types, uids):
+    pop_size = int(pop_size)
+    contacts = sc.dcp(contacts)
+    residences = any([key in list(contacts.keys()) for key in loc_types]) # check if contacts keys contains the residences format, a nested dict
+    layer_keys = list(contacts.keys())
+    contacts_list = [{c:[] for c in layer_keys} for p in range(pop_size)]
+    if residences:
+        layer_keys = list(contacts.values())[0].keys() # Layer keys defined using the new data structure
+        contacts_list = [{c:[] for c in layer_keys} for p in range(pop_size)]
+        loc_populations = {key: [uid for uid in uids if loc_types[uid] == key] for key in loc_types}
+        for res_type, cluster_def in contacts.items():
+            contacts[res_type].pop('c', None)
+
+            for layer_name, cluster_size in contacts[res_type].items():
+                n_remaining = len(loc_populations[res_type])
+                temp_list = sc.dcp(loc_populations[res_type])
+                contacts_dict = defaultdict(set)
+                while n_remaining > 0:
+                    this_cluster =  np.random.poisson(cluster_size)
+                    if this_cluster > n_remaining:
+                        this_cluster = n_remaining
+
+                    cluster_indices = np.random.choice(temp_list, this_cluster)
+                    temp_list = [e for e in temp_list if e not in cluster_indices]
+
+                    for i in cluster_indices:
+                        for j in cluster_indices:
+                            if j <= i:
+                                pass
+                            else:
+                                contacts_dict[i].add(j)
+                                contacts_dict[j].add(i)
+
+                    n_remaining -= this_cluster
+
+                for key in contacts_dict.keys():
+                    contacts_list[key][layer_name] = np.array(list(contacts_dict[key]), dtype=cvd.default_int)
+
+    return contacts_list, layer_keys
+#*****************************************************************************************************************
+

@@ -32,6 +32,7 @@ class PeopleMeta(sc.prettyobj):
         'uid',         # Any (int or str, usually)
         'age',         # Float
         'sex',         # Int
+        'loc_type',    # Int person's residential location type (1=informal, 2=high, 3=medium, 4=low ) BRIAN
         'symp_prob',   # Float
         'severe_prob', # Float
         'crit_prob',   # Float
@@ -228,4 +229,9 @@ def get_scen_plots(which='default'):
         errormsg = f'The choice which="{which}" is not supported'
         raise ValueError(errormsg)
     return plots
+
+loc_type_data = np.array([0.15, 0.5, 0.3, 0.05 ]) # population distribution by location type
+
+layered_contacts = {'1':{'h': 4,   's': 40,  'w': 40,  'c': 60}, '2':{'h': 6,   's': 40,  'w': 40,  'c': 50},
+                    '3':{'h': 4,   's': 30,  'w': 20,  'c': 30}, '4':{'h': 4,   's': 20,  'w': 20,  'c': 20}}
 
