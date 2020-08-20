@@ -186,18 +186,18 @@ def get_sim_plots(which='default'):
         plots = sc.odict({
                 'Total counts': [
                     'cum_infections',
-                    'cum_diagnoses',
-                    'cum_recoveries',
+                    #'cum_diagnoses',
+                    #'cum_recoveries',
                 ],
                 'Daily counts': [
                     'new_infections',
-                    'new_diagnoses',
-                    'new_recoveries',
-                    'new_deaths',
+                    #'new_diagnoses',
+                    #'new_recoveries',
+                    #'new_deaths',
                 ],
                 'Health outcomes': [
-                    'cum_severe',
-                    'cum_critical',
+                    #'cum_severe',
+                    #'cum_critical',
                     'cum_deaths',
                 ]
         })

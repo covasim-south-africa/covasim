@@ -36,7 +36,7 @@ if interv:
     pars.interventions = cv.change_beta(days=45, changes=0.5)
 
 # Make, run, and plot the sim
-sim = cv.Sim(pars=pars, datafile = file_path, datacols = ['t', 'cum_recoveries', 'cum_infections', 'new_infections', 'cum_deaths', 'n_infectious', 'new_recoveries', 'new_deaths', 'date')
+sim = cv.Sim(pars=pars, datafile = file_path, datacols = ['t', 'cum_recoveries', 'cum_infections', 'new_infections', 'cum_deaths', 'n_infectious', 'new_recoveries', 'new_deaths', 'date'])
 sim.initialize()
 sim.run(verbose=verbose)
 if do_plot:

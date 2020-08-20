@@ -3,13 +3,13 @@ import covasim as cv
 import fire
 import wandb
 
-def train(beta:float=0.015, 
+def train(beta:float=0.0085, 
           pop_infected: int=10, 
           rel_death_prob: float=1.0,
           rel_severe_prob: float=1.0,
           rel_crit_prob: float=1.0,
-          start_day: str='2019-12-25',
-          datafile='tests/example_data.csv') -> None:
+          start_day: str='2020-05-23',
+          datafile='tests/Gauteng_data_SecondSet.csv') -> None:
     """
     Perform hyperparameter sweep with Weights and Biases
     https://docs.wandb.com/sweeps
@@ -32,7 +32,7 @@ def train(beta:float=0.015,
     sc.heading('Hyperparmeter Sweep')
     sim = cv.Sim(pars=pars, datafile=datafile)
     sim.run(verbose=False)
-    likelihood = sim.likelihood()
+    likelihood = sim.compute_likelihood()
 
     # log relevant metrics and artifacts
     wandb.log({'likelihood': likelihood})
@@ -40,7 +40,8 @@ def train(beta:float=0.015,
              do_save=True, 
              fig_path=sc.makefilepath(folder=wandb.run.dir, filename=f'{run_id}.png'))
     #wandb.save(datafile)
-    sc.saveobj(sim.pars, folder=wandb.run.dir, filename=f'pars_{run_id}.pkl')
+    sc.saveobj(obj=sim.pars, folder=wandb.run.dir, filename=f'pars_{run_id}.pkl')#(sim.pars, folder=wandb.run.dir, filename=f'pars_{run_id}.pkl')
+    print ({'beta': beta}, {'pop_infected': pop_infected}, {'rel_death_prob': rel_death_prob})
     
 if __name__ == '__main__':
     fire.Fire(train)
