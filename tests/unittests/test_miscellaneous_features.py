@@ -17,7 +17,9 @@ class MiscellaneousFeatureTests(CovaSimTest):
 
     def test_xslx_generation(self):
         super().tearDown()
-        excel_filename = "DEBUG_test_xslx_generation.xls"  # NOTE: xslx files won't open in 365 right now
+        self.is_debugging = False
+        root_filename = "DEBUG_test_xlsx_generation"
+        excel_filename = f"{root_filename}.xlsx"
         if os.path.isfile(excel_filename):
             os.unlink(excel_filename)
             pass
@@ -26,7 +28,7 @@ class MiscellaneousFeatureTests(CovaSimTest):
             'pop_infected': test_infected_value
         }
         self.run_sim(params_dict)
-        self.sim.to_excel(filename=excel_filename)
+        self.sim.to_excel(filename=root_filename)
         simulation_df = pd.ExcelFile(excel_filename)
         expected_sheets = ['Results','Parameters']
         for sheet in expected_sheets:
@@ -38,7 +40,7 @@ class MiscellaneousFeatureTests(CovaSimTest):
                          msg="Should be able to parse the pop_infected parameter from the results sheet")
         results_df = simulation_df.parse('Results')
         observed_day_0_exposed = results_df.loc[results_df['t'] == 0, 'n_exposed'].values[0]
-        self.assertEqual(observed_day_0_exposed, test_infected_value,
+        self.assertGreaterEqual(observed_day_0_exposed, test_infected_value,
                          msg="Should be able to parse the day 0 n_exposed value from the results sheet.")
         if not self.is_debugging:
             os.unlink(excel_filename)
@@ -65,3 +67,5 @@ class MiscellaneousFeatureTests(CovaSimTest):
         pass
 
 
+if __name__ == '__main__':
+    unittest.main()

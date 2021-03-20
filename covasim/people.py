@@ -4,32 +4,60 @@ Defines the Person class and functions associated with making people.
 
 #%% Imports
 import numpy as np
+import sciris as sc
+from collections import defaultdict
+from . import version as cvv
 from . import utils as cvu
 from . import defaults as cvd
 from . import base as cvb
+from . import plotting as cvplt
 
 
 __all__ = ['People']
 
-
 class People(cvb.BasePeople):
     '''
-    A class to perform all the operations on the people.
+    A class to perform all the operations on the people. This class is usually
+    not invoked directly, but instead is created automatically by the sim. The
+    only required input argument is the population size, but typically the full
+    parameters dictionary will get passed instead since it will be needed before
+    the People object is initialized.
 
     Args:
-        pars (dict): the sim parameters, e.g. sim.pars -- must have pop_size and n_days keys
+        pars (dict): the sim parameters, e.g. sim.pars -- alternatively, if a number, interpreted as pop_size
         strict (bool): whether or not to only create keys that are already in self.meta.person; otherwise, let any key be set
         kwargs (dict): the actual data, e.g. from a popdict, being specified
 
+    ::Examples::
+
+        ppl1 = cv.People(2000)
+
+        sim = cv.Sim()
+        ppl2 = cv.People(sim.pars)
     '''
 
     def __init__(self, pars, strict=True, **kwargs):
-        super().__init__(pars)
 
-        # Set person properties -- mostly floats
+        # Handle pars and population size
+        if sc.isnumber(pars): # Interpret as a population size
+            pars = {'pop_size':pars} # Ensure it's a dictionary
+        self.pars     = pars # Equivalent to self.set_pars(pars)
+        self.pop_size = int(pars['pop_size'])
+        self.location = pars.get('location') # Try to get location, but set to None otherwise
+        self.version  = cvv.__version__ # Store version info
+
+        # Other initialization
+        self.t = 0 # Keep current simulation time
+        self._lock = False # Prevent further modification of keys
+        self.meta = cvd.PeopleMeta() # Store list of keys and dtypes
+        self.contacts = None
+        self.init_contacts() # Initialize the contacts
+        self.infection_log = [] # Record of infections - keys for ['source','target','date','layer']
+
+        # Set person properties -- all floats except for UID
         for key in self.meta.person:
             if key == 'uid':
-                self[key] = np.arange(self.pop_size, dtype=object)
+                self[key] = np.arange(self.pop_size, dtype=cvd.default_int)
             else:
                 self[key] = np.full(self.pop_size, np.nan, dtype=cvd.default_float)
 
@@ -46,48 +74,67 @@ class People(cvb.BasePeople):
 
         # Store the dtypes used in a flat dict
         self._dtypes = {key:self[key].dtype for key in self.keys()} # Assign all to float by default
-        self._lock = True # Stop further attributes from being set
+        self._lock = strict # If strict is true, stop further keys from being set (does not affect attributes)
 
         # Store flows to be computed during simulation
         self.flows = {key:0 for key in cvd.new_result_flows}
 
-        # Set any values, if supplied
+        # Although we have called init(), we still need to call initialize()
+        self.initialized = False
+
+        # Handle contacts, if supplied (note: they usually are)
         if 'contacts' in kwargs:
             self.add_contacts(kwargs.pop('contacts'))
+
+        # Handle all other values, e.g. age
         for key,value in kwargs.items():
             if strict:
                 self.set(key, value)
             else:
                 self[key] = value
 
+        self._pending_quarantine = defaultdict(list)  # Internal cache to record people that need to be quarantined on each timestep {t:(person, quarantine_end_day)}
         return
 
 
-    def initialize(self, pars=None):
+    def initialize(self):
         ''' Perform initializations '''
-        self.set_prognoses(pars)
+        self.set_prognoses()
         self.validate()
+        self.initialized = True
         return
 
 
-    def set_prognoses(self, pars=None):
-        ''' Set the prognoses for each person based on age during initialization '''
+    def set_prognoses(self):
+        '''
+        Set the prognoses for each person based on age during initialization. Need
+        to reset the seed because viral loads are drawn stochastically.
+        '''
 
-        if pars is None:
-            pars = self.pars
+        pars = self.pars # Shorten
+        if 'prognoses' not in pars:
+            errormsg = 'This people object does not have the required parameters ("prognoses"). Create a sim (or parameters), then do e.g. people.set_pars(sim.pars).'
+            raise sc.KeyNotFoundError(errormsg)
 
         def find_cutoff(age_cutoffs, age):
-            return np.argmax(age_cutoffs > age)  # Index of the age bin to use
+            '''
+            Find which age bin each person belongs to -- e.g. with standard
+            age bins 0, 10, 20, etc., ages [5, 12, 4, 58] would be mapped to
+            indices [0, 1, 0, 5]. Age bins are not guaranteed to be uniform
+            width, which is why this can't be done as an array operation.
+            '''
+            return np.nonzero(age_cutoffs <= age)[0][-1]  # Index of the age bin to use
 
-        prognoses = pars['prognoses']
-        age_cutoffs = prognoses['age_cutoffs']
-        inds = np.fromiter((find_cutoff(age_cutoffs, this_age) for this_age in self.age), dtype=cvd.default_int, count=len(self))
-        self.symp_prob[:]   = prognoses['symp_probs'][inds]
-        self.severe_prob[:] = prognoses['severe_probs'][inds]*pars['prognoses']['comorbidities'][inds]
-        self.crit_prob[:]   = prognoses['crit_probs'][inds]
-        self.death_prob[:]  = prognoses['death_probs'][inds]
-        self.rel_sus[:]     = prognoses['sus_ORs'][inds] # Default susceptibilities
-        self.rel_trans[:]   = prognoses['trans_ORs'][inds]*cvu.sample(**self.pars['beta_dist'], size=len(inds)) # Default transmissibilities, drawn from a distribution
+        cvu.set_seed(pars['rand_seed'])
+
+        progs = pars['prognoses'] # Shorten the name
+        inds = np.fromiter((find_cutoff(progs['age_cutoffs'], this_age) for this_age in self.age), dtype=cvd.default_int, count=len(self)) # Convert ages to indices
+        self.symp_prob[:]   = progs['symp_probs'][inds] # Probability of developing symptoms
+        self.severe_prob[:] = progs['severe_probs'][inds]*progs['comorbidities'][inds] # Severe disease probability is modified by comorbidities
+        self.crit_prob[:]   = progs['crit_probs'][inds] # Probability of developing critical disease
+        self.death_prob[:]  = progs['death_probs'][inds] # Probability of death
+        self.rel_sus[:]     = progs['sus_ORs'][inds] # Default susceptibilities
+        self.rel_trans[:]   = progs['trans_ORs'][inds]*cvu.sample(**self.pars['beta_dist'], size=len(inds)) # Default transmissibilities, with viral load drawn from a distribution
 
         return
 
@@ -121,29 +168,10 @@ class People(cvb.BasePeople):
 
     def update_contacts(self):
         ''' Refresh dynamic contacts, e.g. community '''
-
         # Figure out if anything needs to be done -- e.g. {'h':False, 'c':True}
-        dynam_keys = [lkey for lkey,is_dynam in self.pars['dynam_layer'].items() if is_dynam]
-
-        # Loop over dynamic keys
-        for lkey in dynam_keys:
-            # Remove existing contacts
-            self.contacts.pop(lkey)
-
-            # Choose how many contacts to make
-            pop_size   = len(self)
-            n_contacts = self.pars['contacts'][lkey]
-            n_new = int(n_contacts*pop_size/2) # Since these get looped over in both directions later
-
-            # Create the contacts
-            new_contacts = {} # Initialize
-            new_contacts['p1']   = np.array(cvu.choose_r(max_n=pop_size, n=n_new), dtype=cvd.default_int) # Choose with replacement
-            new_contacts['p2']   = np.array(cvu.choose_r(max_n=pop_size, n=n_new), dtype=cvd.default_int)
-            new_contacts['beta'] = np.ones(n_new, dtype=cvd.default_float)
-
-            # Add to contacts
-            self.add_contacts(new_contacts, lkey=lkey)
-            self.contacts[lkey].validate()
+        for lkey, is_dynam in self.pars['dynam_layer'].items():
+            if is_dynam:
+                self.contacts[lkey].update(self)
 
         return self.contacts
 
@@ -230,31 +258,29 @@ class People(cvb.BasePeople):
         # Handle people who were actually diagnosed today
         diag_inds  = self.check_inds(self.diagnosed, self.date_diagnosed, filter_inds=None) # Find who was actually diagnosed on this timestep
         self.diagnosed[diag_inds]   = True # Set these people to be diagnosed
+        quarantined = cvu.itruei(self.quarantined, diag_inds)
+        self.date_end_quarantine[quarantined] = self.t # Set end quarantine date to match when the person left quarantine (and entered isolation)
         self.quarantined[diag_inds] = False # If you are diagnosed, you are isolated, not in quarantine
-        self.date_end_quarantine[diag_inds] = np.nan # Clear end quarantine time
 
         return len(test_pos_inds)
 
 
     def check_quar(self):
-        ''' Check for who gets put into quarantine'''
+        ''' Update quarantine state '''
 
-        not_diagnosed_inds = self.false('diagnosed')
-        all_inds = np.arange(len(self)) # Do dead people come out of quarantine?
+        n_quarantined = 0 # Number of people entering quarantine
+        for ind,end_day in self._pending_quarantine[self.t]:
+            if self.quarantined[ind]:
+                self.date_end_quarantine[ind] = max(self.date_end_quarantine[ind], end_day) # Extend quarantine if required
+            elif not (self.dead[ind] or self.recovered[ind] or self.diagnosed[ind]): # Unclear whether recovered should be included here
+                self.quarantined[ind] = True
+                self.date_quarantined[ind] = self.t
+                self.date_end_quarantine[ind] = end_day
+                n_quarantined += 1
 
-        # Perform quarantine - on all who have a date_known_contact (Filter to those not already diagnosed?)
-        not_quar_inds = self.check_inds(self.quarantined, self.date_known_contact, filter_inds=not_diagnosed_inds) # Check who is quarantined, not_diagnosed_inds?
-        not_recovered = cvu.ifalsei(self.recovered, not_quar_inds)  # Pull out people who are not recovered
-        quar_inds     = cvu.ifalsei(self.dead, not_recovered)       # ...or dead
-        self.quarantine(quar_inds) # Put people in quarantine
-        self.date_known_contact[quar_inds] = np.nan # Clear date
-
-        # Check for the end of quarantine - on all who are quarantined
-        end_inds = self.check_inds(~self.quarantined, self.date_end_quarantine, filter_inds=all_inds) # Note the double-negative here
+        # If someone on quarantine has reached the end of their quarantine, release them
+        end_inds = self.check_inds(~self.quarantined, self.date_end_quarantine, filter_inds=None) # Note the double-negative here (~)
         self.quarantined[end_inds] = False # Release from quarantine
-        self.date_end_quarantine[end_inds] = np.nan # Clear end quarantine time
-
-        n_quarantined = len(quar_inds)
 
         return n_quarantined
 
@@ -263,7 +289,7 @@ class People(cvb.BasePeople):
 
     def make_susceptible(self, inds):
         '''
-        Make person susceptible. This is used during dynamic resampling
+        Make a set of people susceptible. This is used during dynamic resampling.
         '''
         for key in self.meta.states:
             if key == 'susceptible':
@@ -280,10 +306,14 @@ class People(cvb.BasePeople):
     def infect(self, inds, hosp_max=None, icu_max=None, source=None, layer=None):
         '''
         Infect people and determine their eventual outcomes.
+
             * Every infected person can infect other people, regardless of whether they develop symptoms
             * Infected people that develop symptoms are disaggregated into mild vs. severe (=requires hospitalization) vs. critical (=requires ICU)
             * Every asymptomatic, mildly symptomatic, and severely symptomatic person recovers
             * Critical cases either recover or die
+            
+        Method also deduplicates input arrays in case one agent is infected many times 
+        and stores who infected whom in infection_log list.
 
         Args:
             inds     (array): array of people to infect
@@ -322,7 +352,7 @@ class People(cvb.BasePeople):
             self.infection_log.append(dict(source=source[i] if source is not None else None, target=target, date=self.t, layer=layer))
 
         # Calculate how long before this person can infect other people
-        self.dur_exp2inf[inds]     = cvu.sample(**durpars['exp2inf'], size=n_infections)
+        self.dur_exp2inf[inds] = cvu.sample(**durpars['exp2inf'], size=n_infections)
         self.date_infectious[inds] = self.dur_exp2inf[inds] + self.t
 
         # Use prognosis probabilities to determine what happens to them
@@ -345,7 +375,7 @@ class People(cvb.BasePeople):
         sev_inds = symp_inds[is_sev]
         mild_inds = symp_inds[~is_sev] # Not severe
 
-        # CASE 2.1: Mild symptoms, no hospitalization required and no probaility of death
+        # CASE 2.1: Mild symptoms, no hospitalization required and no probability of death
         dur_mild2rec = cvu.sample(**durpars['mild2rec'], size=len(mild_inds))
         self.date_recovered[mild_inds] = self.date_symptomatic[mild_inds] + dur_mild2rec  # Date they recover
         self.dur_disease[mild_inds] = self.dur_exp2inf[mild_inds] + self.dur_inf2sym[mild_inds] + dur_mild2rec  # Store how long this person had COVID-19
@@ -386,16 +416,14 @@ class People(cvb.BasePeople):
 
     def test(self, inds, test_sensitivity=1.0, loss_prob=0.0, test_delay=0):
         '''
-        Method to test people
+        Method to test people. Typically not to be called by the user directly;
+        see the test_num() and test_prob() interventions.
 
         Args:
             inds: indices of who to test
             test_sensitivity (float): probability of a true positive
             loss_prob (float): probability of loss to follow-up
             test_delay (int): number of days before test results are ready
-
-        Returns:
-            Whether or not this person tested positive
         '''
 
         inds = np.unique(inds)
@@ -417,47 +445,155 @@ class People(cvb.BasePeople):
         return
 
 
-    def quarantine(self, inds):
+    def schedule_quarantine(self, inds, start_date=None, period=None):
         '''
-        Quarantine selected people starting on the current day. If a person is already
-        quarantined, this will extend their quarantine.
+        Schedule a quarantine. Typically not called by the user directly except
+        via a custom intervention; see the contact_tracing() intervention instead.
+
+        This function will create a request to quarantine a person on the start_date for
+        a period of time. Whether they are on an existing quarantine that gets extended, or
+        whether they are no longer eligible for quarantine, will be checked when the start_date
+        is reached.
+
         Args:
-            inds (array): indices of who to quarantine, specified by check_quar()
+            inds (int): indices of who to quarantine, specified by check_quar()
+            start_date (int): day to begin quarantine (defaults to the current day, `sim.t`)
+            period (int): quarantine duration (defaults to `pars['quar_period']`)
         '''
-        self.quarantined[inds] = True
-        self.date_quarantined[inds] = self.t
-        self.date_end_quarantine[inds] = self.t + self.pars['quar_period']
+
+        start_date = self.t if start_date is None else int(start_date)
+        period = self.pars['quar_period'] if period is None else int(period)
+        for ind in inds:
+            self._pending_quarantine[start_date].append((ind, start_date + period))
         return
 
 
-    def trace(self, inds, trace_probs, trace_time):
+    #%% Analysis methods
+
+    def plot(self, *args, **kwargs):
         '''
-        Trace the contacts of the people provided
+        Plot statistics of the population -- age distribution, numbers of contacts,
+        and overall weight of contacts (number of contacts multiplied by beta per
+        layer).
+
         Args:
-            inds (array): indices of whose contacts to trace
-            trace_probs (dict): probability of being able to trace people at each contact layer - should have the same keys as contacts
-            trace_time (dict): days it'll take to trace people at each contact layer - should have the same keys as contacts
+            bins      (arr)   : age bins to use (default, 0-100 in one-year bins)
+            width     (float) : bar width
+            font_size (float) : size of font
+            alpha     (float) : transparency of the plots
+            fig_args  (dict)  : passed to pl.figure()
+            axis_args (dict)  : passed to pl.subplots_adjust()
+            plot_args (dict)  : passed to pl.plot()
+            do_show   (bool)  : whether to show the plot
+            fig       (fig)   : handle of existing figure to plot into
+        '''
+        fig = cvplt.plot_people(people=self, *args, **kwargs)
+        return fig
+
+
+    def story(self, uid, *args):
+        '''
+        Print out a short history of events in the life of the specified individual.
+
+        Args:
+            uid (int/list): the person or people whose story is being regaled
+            args (list): these people will tell their stories too
+
+        **Example**::
+
+            sim = cv.Sim(pop_type='hybrid', verbose=0)
+            sim.run()
+            sim.people.story(12)
+            sim.people.story(795)
         '''
 
-        # Extract the indices of the people who'll be contacted
-        traceable_layers = {k:v for k,v in trace_probs.items() if v != 0.} # Only trace if there's a non-zero tracing probability
-        for lkey,this_trace_prob in traceable_layers.items():
-            if self.pars['beta_layer'][lkey]: # Skip if beta is 0 for this layer
-                this_trace_time = trace_time[lkey]
+        def label_lkey(lkey):
+            ''' Friendly name for common layer keys '''
+            if lkey.lower() == 'a':
+                llabel = 'default contact'
+            if lkey.lower() == 'h':
+                llabel = 'household'
+            elif lkey.lower() == 's':
+                llabel = 'school'
+            elif lkey.lower() == 'w':
+                llabel = 'workplace'
+            elif lkey.lower() == 'c':
+                llabel = 'community'
+            else:
+                llabel = f'"{lkey}"'
+            return llabel
 
-                # Find all the contacts of these people
-                nzinds = self.contacts[lkey]['beta'].nonzero()[0] # Find nonzero beta edges
-                inds_list = []
-                for k1,k2 in [['p1','p2'],['p2','p1']]: # Loop over the contact network in both directions
-                    in_k1 = np.isin(self.contacts[lkey][k1], inds).nonzero()[0] # Get all the indices of the pairs that each person is in
-                    nz_k1 = np.intersect1d(nzinds, in_k1) # Find the ones that are nonzero
-                    inds_list.append(self.contacts[lkey][k2][nz_k1]) # Find their pairing partner
-                edge_inds = np.unique(np.concatenate(inds_list)) # Find all edges
+        uids = sc.promotetolist(uid)
+        uids.extend(args)
 
-                # Check contacts
-                contact_inds = cvu.binomial_filter(this_trace_prob, edge_inds) # Filter the indices according to the probability of being able to trace this layer
-                if len(contact_inds):
-                    self.known_contact[contact_inds] = True
-                    self.date_known_contact[contact_inds]  = np.fmin(self.date_known_contact[contact_inds], self.t+this_trace_time)
+        for uid in uids:
 
+            p = self[uid]
+            sex = 'female' if p.sex == 0 else 'male'
+
+            intro = f'\nThis is the story of {uid}, a {p.age:.0f} year old {sex}'
+
+            if not p.susceptible:
+                if np.isnan(p.date_symptomatic):
+                    print(f'{intro}, who had asymptomatic COVID.')
+                else:
+                    print(f'{intro}, who had symptomatic COVID.')
+            else:
+                print(f'{intro}, who did not contract COVID.')
+
+            total_contacts = 0
+            no_contacts = []
+            for lkey in p.contacts.keys():
+                llabel = label_lkey(lkey)
+                n_contacts = len(p.contacts[lkey])
+                total_contacts += n_contacts
+                if n_contacts:
+                    print(f'{uid} is connected to {n_contacts} people in the {llabel} layer')
+                else:
+                    no_contacts.append(llabel)
+            if len(no_contacts):
+                nc_string = ', '.join(no_contacts)
+                print(f'{uid} has no contacts in the {nc_string} layer(s)')
+            print(f'{uid} has {total_contacts} contacts in total')
+
+            events = []
+
+            dates = {
+            'date_critical'       : 'became critically ill and needed ICU care',
+            'date_dead'           : 'died ☹',
+            'date_diagnosed'      : 'was diagnosed with COVID',
+            'date_end_quarantine' : 'ended quarantine',
+            'date_infectious'     : 'became infectious',
+            'date_known_contact'  : 'was notified they may have been exposed to COVID',
+            'date_pos_test'       : 'recieved their positive test result',
+            'date_quarantined'    : 'entered quarantine',
+            'date_recovered'      : 'recovered',
+            'date_severe'         : 'developed severe symptoms and needed hospitalization',
+            'date_symptomatic'    : 'became symptomatic',
+            'date_tested'         : 'was tested for COVID',
+            }
+
+            for attribute, message in dates.items():
+                date = getattr(p,attribute)
+                if not np.isnan(date):
+                    events.append((date, message))
+
+            for infection in self.infection_log:
+                lkey = infection['layer']
+                llabel = label_lkey(lkey)
+                if infection['target'] == uid:
+                    if lkey:
+                        events.append((infection['date'], f'was infected with COVID by {infection["source"]} via the {llabel} layer'))
+                    else:
+                        events.append((infection['date'], f'was infected with COVID as a seed infection'))
+
+                if infection['source'] == uid:
+                    x = len([a for a in self.infection_log if a['source'] == infection['target']])
+                    events.append((infection['date'],f'gave COVID to {infection["target"]} via the {llabel} layer ({x} secondary infections)'))
+
+            if len(events):
+                for day, event in sorted(events, key=lambda x: x[0]):
+                    print(f'On day {day:.0f}, {uid} {event}')
+            else:
+                print(f'Nothing happened to {uid} during the simulation.')
         return

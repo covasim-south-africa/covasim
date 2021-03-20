@@ -110,11 +110,13 @@ class SimulationParameterTests(CovaSimTest):
         scale_2_one_day = {
             TPKeys.number_agents: 100,
             TPKeys.population_scaling_factor: 2,
+            TPKeys.population_rescaling: False,
             TPKeys.number_simulated_days: 1
         }
         scale_10_one_day = {
             TPKeys.number_agents: 100,
             TPKeys.population_scaling_factor: 10,
+            TPKeys.population_rescaling: False,
             TPKeys.number_simulated_days: 1
         }
         self.run_sim(scale_1_one_day)
@@ -127,40 +129,6 @@ class SimulationParameterTests(CovaSimTest):
         self.assertEqual(scale_10_pop, 10 * scale_1_pop)
         pass
 
-    def test_initial_infected_count(self):
-        """
-        Set a vanilla number of infections (13)
-        Run sim for one day and verify correct count
-        """
-        infected_0_one_day = {
-            TPKeys.number_agents: 100,
-            TPKeys.number_simulated_days: 1,
-            TPKeys.population_scaling_factor: 1,
-            TPKeys.initial_infected_count: 0
-        }
-        infected_1_one_day = {
-            TPKeys.number_agents: 100,
-            TPKeys.population_scaling_factor: 1,
-            TPKeys.number_simulated_days: 1,
-            TPKeys.initial_infected_count: 1
-        }
-        infected_321_one_day = {
-            TPKeys.number_agents: 1000,
-            TPKeys.population_scaling_factor: 1,
-            TPKeys.number_simulated_days: 1,
-            TPKeys.initial_infected_count: 321
-        }
-        self.run_sim(infected_0_one_day)
-        key = TestProperties.ResultsDataKeys.exposed_at_timestep
-        inf_0_pop = self.get_day_zero_channel_value(key)
-        self.run_sim(infected_1_one_day)
-        inf_1_pop = self.get_day_zero_channel_value(key)
-        self.run_sim(infected_321_one_day)
-        inf_321_pop = self.get_day_zero_channel_value(key)
-        self.assertEqual(inf_0_pop, infected_0_one_day[TPKeys.initial_infected_count])
-        self.assertEqual(inf_1_pop, infected_1_one_day[TPKeys.initial_infected_count])
-        self.assertEqual(inf_321_pop, infected_321_one_day[TPKeys.initial_infected_count])
-        pass
 
     def test_random_seed(self):
         """
@@ -211,52 +179,6 @@ class SimulationParameterTests(CovaSimTest):
                          msg=f"With random seed the different, these channels should"
                              f"be distinct.")
         pass
-
-    @unittest.skip('Disabled to improve test suite speed')
-    def test_timelimit(self):
-        """
-        Start timer, run a simulation with many
-        persons and a very short time limit
-        Verify that the simulation exits after time
-        limit expired.
-        """
-        short_time_limit = {
-            TPKeys.time_limit: 0.5
-        }
-        med_time_limit = {
-            TPKeys.time_limit: 1.0
-        }
-        long_time_limit = {
-            TPKeys.time_limit: 15.0
-        }
-        self.run_sim(params_dict=short_time_limit)
-        infections_channel_short = self.get_full_result_channel(
-            ResKeys.infectious_at_timestep
-        )
-        self.run_sim(params_dict=med_time_limit)
-        infections_channel_med = self.get_full_result_channel(
-            ResKeys.infectious_at_timestep
-        )
-        self.run_sim(params_dict=long_time_limit)
-        infections_channel_long = self.get_full_result_channel(
-            ResKeys.infectious_at_timestep
-        )
-        def remove_zeros(channel):
-            while 0 in channel:
-                channel.remove(0)
-                pass
-            return channel
-        infections_channel_long = remove_zeros(infections_channel_long)
-        infections_channel_med = remove_zeros(infections_channel_med)
-        infections_channel_short = remove_zeros(infections_channel_short)
-        self.assertGreaterEqual(len(infections_channel_long), len(infections_channel_med))
-        self.assertGreaterEqual(len(infections_channel_med), len(infections_channel_short))
-        if self.is_debugging:
-            print(f"Short sim length: {len(infections_channel_short)}")
-            print(f"Med sim length: {len(infections_channel_med)}")
-            print(f"Long sim length: {len(infections_channel_long)}")
-        pass
-    pass
 
 
 if __name__ == '__main__':

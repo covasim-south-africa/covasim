@@ -1,25 +1,35 @@
 '''
 Set the defaults across each of the different files.
+
+To change the default precision from 32 bit (default) to 64 bit, use::
+
+    cv.options.set(precision=64)
 '''
 
 import numpy as np
+import numba as nb
 import sciris as sc
+from .settings import options as cvo # To set options
 
-# Specify all externally visible functions this file defines
-__all__ = ['get_colors', 'get_sim_plots', 'get_scen_plots']
+# Specify all externally visible functions this file defines -- other things are available as e.g. cv.defaults.default_int
+__all__ = ['default_float', 'default_int', 'get_colors', 'get_sim_plots', 'get_scen_plots']
+
 
 #%% Specify what data types to use
 
-default_precision = 32 # Use this by default for speed and memory efficiency
 result_float = np.float64 # Always use float64 for results, for simplicity
-if default_precision == 32:
+if cvo.precision == 32:
     default_float = np.float32
     default_int   = np.int32
-elif default_precision == 64:
+    nbfloat       = nb.float32
+    nbint         = nb.int32
+elif cvo.precision == 64: # pragma: no cover
     default_float = np.float64
     default_int   = np.int64
+    nbfloat       = nb.float64
+    nbint         = nb.int64
 else:
-    raise NotImplementedError
+    raise NotImplementedError(f'Precision must be either 32 bit or 64 bit, not {cvo.precision}')
 
 
 #%% Define all properties of people
@@ -29,9 +39,9 @@ class PeopleMeta(sc.prettyobj):
 
     # Set the properties of a person
     person = [
-        'uid',         # Any (int or str, usually)
+        'uid',         # Int
         'age',         # Float
-        'sex',         # Int
+        'sex',         # Float
         'symp_prob',   # Float
         'severe_prob', # Float
         'crit_prob',   # Float
@@ -134,40 +144,45 @@ def get_colors():
 
     NB, includes duplicates since stocks and flows are named differently.
     '''
-    colors = sc.objdict(
-        susceptible = '#5e7544',
-        infectious  = '#c78f65',
-        infections  = '#c75649',
-        exposed     = '#c75649', # Duplicate
-        tests       = '#aaa8ff',
-        diagnoses   = '#8886cc',
-        diagnosed   = '#8886cc', # Duplicate
-        recoveries  = '#799956',
-        recovered   = '#799956', # Duplicate
-        symptomatic = '#c1ad71',
-        severe      = '#c1981d',
-        quarantined = '#5f1914',
-        critical    = '#b86113',
-        deaths      = '#000000',
-        dead        = '#000000', # Duplicate
-    )
-    return colors
+    c = sc.objdict()
+    c.susceptible   = '#4d771e'
+    c.exposed       = '#c78f65'
+    c.infectious    = '#e45226'
+    c.infections    = '#b62413'
+    c.tests         = '#aaa8ff'
+    c.diagnoses     = '#5f5cd2'
+    c.diagnosed     = c.diagnoses
+    c.quarantined   = '#5c399c'
+    c.recoveries    = '#9e1149'
+    c.recovered     = c.recoveries
+    c.symptomatic   = '#c1ad71'
+    c.severe        = '#c1981d'
+    c.critical      = '#b86113'
+    c.deaths        = '#000000'
+    c.dead          = c.deaths
+    c.default       = '#000000'
+    return c
 
 
 # Define the 'overview plots', i.e. the most useful set of plots to explore different aspects of a simulation
 overview_plots = [
             'cum_infections',
-            'cum_diagnoses',
             'cum_severe',
             'cum_critical',
             'cum_deaths',
+            'cum_diagnoses',
             'new_infections',
-            'new_tests',
-            'new_diagnoses',
+            'new_severe',
+            'new_critical',
             'new_deaths',
-            'new_quarantined',
+            'new_diagnoses',
             'n_infectious',
+            'n_severe',
+            'n_critical',
+            'n_susceptible',
+            'new_tests',
             'n_symptomatic',
+            'new_quarantined',
             'n_quarantined',
             'test_yield',
             'r_eff',
@@ -185,24 +200,31 @@ def get_sim_plots(which='default'):
         plots = sc.odict({
                 'Total counts': [
                     'cum_infections',
+                    'n_infectious',
                     'cum_diagnoses',
-                    'cum_recoveries',
                 ],
                 'Daily counts': [
                     'new_infections',
                     'new_diagnoses',
-                    'new_recoveries',
-                    'new_deaths',
                 ],
                 'Health outcomes': [
                     'cum_severe',
                     'cum_critical',
                     'cum_deaths',
-                ]
+                ],
         })
     elif which == 'overview':
         plots = sc.dcp(overview_plots)
-    else:
+    elif which == 'seir':
+        plots = sc.odict({
+                'SEIR states': [
+                    'n_susceptible',
+                    'n_preinfectious',
+                    'n_infectious',
+                    'n_removed',
+                ],
+        })
+    else: # pragma: no cover
         errormsg = f'The choice which="{which}" is not supported'
         raise ValueError(errormsg)
     return plots
@@ -220,11 +242,11 @@ def get_scen_plots(which='default'):
             ],
             'Cumulative deaths': [
                 'cum_deaths',
-            ]
+            ],
         })
     elif which == 'overview':
         plots = sc.dcp(overview_plots)
-    else:
+    else: # pragma: no cover
         errormsg = f'The choice which="{which}" is not supported'
         raise ValueError(errormsg)
     return plots

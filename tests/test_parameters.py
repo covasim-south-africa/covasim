@@ -8,8 +8,6 @@ import pytest
 import sciris as sc
 import covasim as cv
 
-do_plot = False
-
 
 #%% Define the tests
 def test_parameters():
@@ -26,7 +24,7 @@ def test_data():
 
     # Check that it is looking for the right file
     with pytest.raises(FileNotFoundError):
-        data = cv.load_data(filename='file_not_found.csv')
+        data = cv.load_data(datafile='file_not_found.csv')
 
     return data
 

@@ -1,6 +1,5 @@
 from cova_epi_scraper import Scraper
 import pandas as pd
-import os
 
 
 class ECDPScraper(Scraper):
@@ -16,9 +15,9 @@ pars['output_folder'] = 'epi_data/ecdp'
 
 pars['renames'] = dict()
 pars['renames']['countriesAndTerritories'] = 'key'
-pars['renames']['cases'] = 'new_positives'
-pars['renames']['deaths'] = 'new_death'
-pars['renames']['popData2018'] = 'population'
+pars['renames']['cases']                   = 'new_diagnoses'
+pars['renames']['deaths']                  = 'new_deaths'
+pars['renames']['popData2018']             = 'population'
 
 pars['fields_to_drop'] = [
     'dateRep',

@@ -1,0 +1,22 @@
+#!/bin/bash
+#
+# To rebuild notebooks, type
+#  ./build_docs auto
+#
+# Otherwise, Jupyter notebooks will not be rebuilt.
+
+start=$SECONDS
+export NBSPHINX_EXECUTE=$1
+
+echo 'Building docs...'
+make clean # Delete
+make html # Actually make
+duration=$(( SECONDS - start ))
+
+echo 'Cleaning up tutorial files...'
+cd tutorials
+./clean_outputs
+
+echo "Docs built after $duration seconds."
+echo "Index:"
+echo "`pwd`/_build/html/index.html"
