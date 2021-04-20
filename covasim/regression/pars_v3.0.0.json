@@ -1,18 +1,19 @@
 {
   "pop_size": 20000.0,
-  "pop_infected": 10,
+  "pop_infected": 20,
   "pop_type": "random",
   "location": null,
   "start_day": "2020-03-01",
   "end_day": null,
   "n_days": 60,
   "rand_seed": 1,
-  "verbose": 1,
+  "verbose": 0.1,
   "pop_scale": 1,
+  "scaled_pop": null,
   "rescale": true,
   "rescale_threshold": 0.05,
   "rescale_factor": 1.2,
-  "beta": 0.016,
+  "frac_susceptible": 1.0,
   "contacts": {
     "a": 20
   },
@@ -22,7 +23,6 @@
   "beta_layer": {
     "a": 1.0
   },
-  "n_imports": 0,
   "beta_dist": {
     "dist": "neg_binomial",
     "par1": 1.0,
@@ -34,23 +34,49 @@
     "load_ratio": 2,
     "high_cap": 4
   },
+  "beta": 0.016,
+  "n_imports": 0,
+  "n_strains": 1,
+  "use_waning": false,
+  "nab_init": {
+    "dist": "normal",
+    "par1": 0,
+    "par2": 2
+  },
+  "nab_decay": {
+    "form": "nab_decay",
+    "decay_rate1": 0.007701635339554948,
+    "decay_time1": 250,
+    "decay_rate2": 0.001
+  },
+  "nab_kin": null,
+  "nab_boost": 1.5,
+  "nab_eff": {
+    "sus": {
+      "slope": 2.7,
+      "n_50": 0.03
+    },
+    "symp": 0.1,
+    "sev": 0.52
+  },
+  "cross_immunity": 0.5,
+  "rel_imm": {
+    "asymp": 0.85,
+    "mild": 1,
+    "severe": 1.5
+  },
+  "immunity": null,
+  "rel_beta": 1.0,
   "asymp_factor": 1.0,
-  "iso_factor": {
-    "a": 0.2
-  },
-  "quar_factor": {
-    "a": 0.3
-  },
-  "quar_period": 14,
   "dur": {
     "exp2inf": {
       "dist": "lognormal_int",
-      "par1": 4.6,
-      "par2": 4.8
+      "par1": 4.5,
+      "par2": 1.5
     },
     "inf2sym": {
       "dist": "lognormal_int",
-      "par1": 1.0,
+      "par1": 1.1,
       "par2": 0.9
     },
     "sym2sev": {
@@ -60,8 +86,8 @@
     },
     "sev2crit": {
       "dist": "lognormal_int",
-      "par1": 3.0,
-      "par2": 7.4
+      "par1": 1.5,
+      "par2": 2.0
     },
     "asym2rec": {
       "dist": "lognormal_int",
@@ -75,18 +101,18 @@
     },
     "sev2rec": {
       "dist": "lognormal_int",
-      "par1": 14.0,
-      "par2": 2.4
+      "par1": 18.1,
+      "par2": 6.3
     },
     "crit2rec": {
       "dist": "lognormal_int",
-      "par1": 14.0,
-      "par2": 2.4
+      "par1": 18.1,
+      "par2": 6.3
     },
     "crit2die": {
       "dist": "lognormal_int",
-      "par1": 6.2,
-      "par2": 1.7
+      "par1": 10.7,
+      "par2": 4.8
     }
   },
   "rel_symp_prob": 1.0,
@@ -181,17 +207,24 @@
     ],
     "death_probs": [
       0.6666666666666667,
-      0.75,
-      0.8333333333333333,
-      0.7692307692307694,
-      0.6944444444444444,
-      0.6430868167202572,
-      0.6045616927727397,
-      0.5715566513504426,
-      0.5338691159586683,
-      0.5338691159586683
+      0.25,
+      0.2777777777777778,
+      0.30769230769230776,
+      0.45370370370370366,
+      0.2840300107181136,
+      0.2104973893926903,
+      0.2733385632634764,
+      0.47600459242250287,
+      0.9293915040183697
     ]
   },
+  "iso_factor": {
+    "a": 0.2
+  },
+  "quar_factor": {
+    "a": 0.3
+  },
+  "quar_period": 14,
   "interventions": [],
   "analyzers": [],
   "timelimit": null,
@@ -199,5 +232,25 @@
   "n_beds_hosp": null,
   "n_beds_icu": null,
   "no_hosp_factor": 2.0,
-  "no_icu_factor": 2.0
+  "no_icu_factor": 2.0,
+  "vaccine_pars": {},
+  "vaccine_map": {},
+  "strains": [],
+  "strain_map": {
+    "0": "wild"
+  },
+  "strain_pars": {
+    "wild": {
+      "rel_imm": {
+        "asymp": 0.85,
+        "mild": 1,
+        "severe": 1.5
+      },
+      "rel_beta": 1.0,
+      "rel_symp_prob": 1.0,
+      "rel_severe_prob": 1.0,
+      "rel_crit_prob": 1.0,
+      "rel_death_prob": 1.0
+    }
+  }
 }

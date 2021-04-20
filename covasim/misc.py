@@ -7,6 +7,7 @@ import pandas as pd
 import pylab as pl
 import sciris as sc
 import scipy.stats as sps
+from pathlib import Path
 from . import version as cvv
 
 
@@ -22,10 +23,10 @@ date_range = sc.daterange
 
 #%% Loading/saving functions
 
-__all__ += ['load_data', 'load', 'save', 'migrate', 'savefig']
+__all__ += ['load_data', 'load', 'save', 'savefig']
 
 
-def load_data(datafile, columns=None, calculate=True, check_date=True, verbose=True, **kwargs):
+def load_data(datafile, columns=None, calculate=True, check_date=True, verbose=True, start_day=None, **kwargs):
     '''
     Load data for comparing to the model output, either from file or from a dataframe.
 
@@ -34,6 +35,7 @@ def load_data(datafile, columns=None, calculate=True, check_date=True, verbose=T
         columns (list): list of column names (otherwise, load all)
         calculate (bool): whether to calculate cumulative values from daily counts
         check_date (bool): whether to check that a 'date' column is present
+        start_day (date): if the 'date' column is provided as integer number of days, consider them relative to this
         kwargs (dict): passed to pd.read_excel()
 
     Returns:
@@ -41,6 +43,8 @@ def load_data(datafile, columns=None, calculate=True, check_date=True, verbose=T
     '''
 
     # Load data
+    if isinstance(datafile, Path): # Convert to a string
+        datafile = str(datafile)
     if isinstance(datafile, str):
         df_lower = datafile.lower()
         if df_lower.endswith('csv'):
@@ -85,13 +89,16 @@ def load_data(datafile, columns=None, calculate=True, check_date=True, verbose=T
             errormsg = f'Required column "date" not found; columns are {data.columns}'
             raise ValueError(errormsg)
         else:
-            data['date'] = pd.to_datetime(data['date']).dt.date
+            if data['date'].dtype == np.int64: # If it's integers, treat it as days from the start day
+                data['date'] = sc.date(data['date'].values, start_date=start_day)
+            else: # Otherwise, use Pandas to convert it
+                data['date'] = pd.to_datetime(data['date']).dt.date
         data.set_index('date', inplace=True, drop=False) # Don't drop so sim.data['date'] can still be accessed
 
     return data
 
 
-def load(*args, do_migrate=True, **kwargs):
+def load(*args, do_migrate=True, update=True, verbose=True, **kwargs):
     '''
     Convenience method for sc.loadobj() and equivalent to cv.Sim.load() or
     cv.Scenarios.load().
@@ -99,6 +106,8 @@ def load(*args, do_migrate=True, **kwargs):
     Args:
         filename (str): file to load
         do_migrate (bool): whether to migrate if loading an old object
+        update (bool): whether to modify the object to reflect the new version
+        verbose (bool): whether to print migration information
         args (list): passed to sc.loadobj()
         kwargs (dict): passed to sc.loadobj()
 
@@ -118,7 +127,7 @@ def load(*args, do_migrate=True, **kwargs):
         if cmp != 0:
             print(f'Note: you have Covasim v{v_curr}, but are loading an object from v{v_obj}')
             if do_migrate:
-                obj = migrate(obj, v_obj, v_curr)
+                obj = migrate(obj, update=update, verbose=verbose)
     return obj
 
 
@@ -143,102 +152,6 @@ def save(*args, **kwargs):
     '''
     filepath = sc.saveobj(*args, **kwargs)
     return filepath
-
-
-def migrate(obj, update=True, verbose=True, die=False):
-    '''
-    Define migrations allowing compatibility between different versions of saved
-    files. Usually invoked automatically upon load, but can be called directly by
-    the user to load custom objects, e.g. lists of sims.
-
-    Currently supported objects are sims, multisims, scenarios, and people.
-
-    Args:
-        obj (any): the object to migrate
-        update (bool): whether to update version information to current version after successful migration
-        verbose (bool): whether to print warnings if something goes wrong
-        die (bool): whether to raise an exception if something goes wrong
-
-    Returns:
-        The migrated object
-
-    **Example**::
-
-        sims = cv.load('my-list-of-sims.obj')
-        sims = [cv.migrate(sim) for sim in sims]
-    '''
-    from . import base as cvb
-    from . import run as cvr
-    from . import interventions as cvi
-
-    # Migrations for simulations
-    if isinstance(obj, cvb.BaseSim):
-        sim = obj
-
-        # Migration from <2.0.0 to 2.0.0
-        if sc.compareversions(sim.version, '2.0.0') == -1: # Migrate from <2.0 to 2.0
-            if verbose: print(f'Migrating sim from version {sim.version} to version {cvv.__version__}')
-
-            # Add missing attribute
-            if not hasattr(sim, '_default_ver'):
-                sim._default_ver = None
-
-            # Recursively migrate people if needed
-            if sim.people:
-                sim.people = migrate(sim.people, update=update)
-
-            # Rename intervention attribute
-            tps = sim.get_interventions(cvi.test_prob)
-            for tp in tps: # pragma: no cover
-                try:
-                    tp.sensitivity = tp.test_sensitivity
-                    del tp.test_sensitivity
-                except:
-                    pass
-
-    # Migrations for People
-    elif isinstance(obj, cvb.BasePeople): # pragma: no cover
-        ppl = obj
-        if not hasattr(ppl, 'version'): # For people prior to 2.0
-            if verbose: print(f'Migrating people from version <2.0 to version {cvv.__version__}')
-            cvb.set_metadata(ppl) # Set all metadata
-
-    # Migrations for MultiSims -- use recursion
-    elif isinstance(obj, cvr.MultiSim):
-        msim = obj
-        msim.base_sim = migrate(msim.base_sim, update=update)
-        msim.sims = [migrate(sim, update=update) for sim in msim.sims]
-        if not hasattr(msim, 'version'): # For msims prior to 2.0
-            if verbose: print(f'Migrating multisim from version <2.0 to version {cvv.__version__}')
-            cvb.set_metadata(msim) # Set all metadata
-            msim.label = None
-
-    # Migrations for Scenarios
-    elif isinstance(obj, cvr.Scenarios):
-        scens = obj
-        scens.base_sim = migrate(scens.base_sim, update=update)
-        for key,simlist in scens.sims.items():
-            scens.sims[key] = [migrate(sim, update=update) for sim in simlist] # Nested loop
-        if not hasattr(scens, 'version'): # For scenarios prior to 2.0
-            if verbose: print(f'Migrating scenarios from version <2.0 to version {cvv.__version__}')
-            cvb.set_metadata(scens) # Set all metadata
-            scens.label = None
-
-    # Unreconized object type
-    else:
-        errormsg = f'Object {obj} of type {type(obj)} is not understood and cannot be migrated: must be a sim, multisim, scenario, or people object'
-        if die:
-            raise TypeError(errormsg)
-        elif verbose: # pragma: no cover
-            print(errormsg)
-            return
-
-
-    # If requested, update the stored version to the current version
-    if update:
-        obj.version = cvv.__version__
-
-    return obj
 
 
 def savefig(filename=None, comments=None, **kwargs):
@@ -288,6 +201,169 @@ def savefig(filename=None, comments=None, **kwargs):
     # Save the figure
     pl.savefig(filename, dpi=dpi, metadata=metadata, **kwargs)
     return filename
+
+
+#%% Migration functions
+
+__all__ += ['migrate']
+
+def migrate_lognormal(pars, revert=False, verbose=True):
+    '''
+    Small helper function to automatically migrate the standard deviation of lognormal
+    distributions to match pre-v2.1.0 runs (where it was treated as the variance instead).
+    To undo the migration, run with revert=True.
+
+    Args:
+        pars (dict): the parameters dictionary; or, alternatively, the sim object the parameters will be taken from
+        revert (bool): whether to reverse the update rather than make it
+        verbose (bool): whether to print out the old and new values
+    '''
+    # Handle different input types
+    from . import base as cvb
+    if isinstance(pars, cvb.BaseSim):
+        pars = pars.pars # It's actually a sim, not a pars object
+
+    # Convert each value to the square root, since squared in the new version
+    for key,dur in pars['dur'].items():
+        if 'lognormal' in dur['dist']:
+            old = dur['par2']
+            if revert:
+                new = old**2
+            else:
+                new = np.sqrt(old)
+            dur['par2'] = new
+            if verbose > 1:
+                print(f'  Updating {key} std from {old:0.2f} to {new:0.2f}')
+
+    # Store whether migration has occurred so we don't accidentally do it twice
+    if not revert:
+        pars['migrated_lognormal'] = True
+    else:
+        pars.pop('migrated_lognormal', None)
+
+    return
+
+
+def migrate_strains(pars, verbose=True):
+    '''
+    Small helper function to add necessary strain parameters.
+    '''
+    pars['use_waning'] = False
+    pars['n_strains'] = 1
+    pars['n_strains'] = 1
+    pars['strains'] = []
+    return
+
+
+def migrate(obj, update=True, verbose=True, die=False):
+    '''
+    Define migrations allowing compatibility between different versions of saved
+    files. Usually invoked automatically upon load, but can be called directly by
+    the user to load custom objects, e.g. lists of sims.
+
+    Currently supported objects are sims, multisims, scenarios, and people.
+
+    Args:
+        obj (any): the object to migrate
+        update (bool): whether to update version information to current version after successful migration
+        verbose (bool): whether to print warnings if something goes wrong
+        die (bool): whether to raise an exception if something goes wrong
+
+    Returns:
+        The migrated object
+
+    **Example**::
+
+        sims = cv.load('my-list-of-sims.obj')
+        sims = [cv.migrate(sim) for sim in sims]
+    '''
+    # Import here to avoid recursion
+    from . import base as cvb
+    from . import run as cvr
+    from . import interventions as cvi
+
+    # Migrations for simulations
+    if isinstance(obj, cvb.BaseSim):
+        sim = obj
+
+        # Migration from <2.0.0 to 2.0.0
+        if sc.compareversions(sim.version, '2.0.0') == -1: # Migrate from <2.0 to 2.0
+            if verbose: print(f'Migrating sim from version {sim.version} to version {cvv.__version__}')
+
+            # Add missing attribute
+            if not hasattr(sim, '_default_ver'):
+                sim._default_ver = None
+
+            # Recursively migrate people if needed
+            if sim.people:
+                sim.people = migrate(sim.people, update=update)
+
+            # Rename intervention attribute
+            tps = sim.get_interventions(cvi.test_prob)
+            for tp in tps: # pragma: no cover
+                try:
+                    tp.sensitivity = tp.test_sensitivity
+                    del tp.test_sensitivity
+                except:
+                    pass
+
+        # Migration from <2.1.0 to 2.1.0
+        if sc.compareversions(sim.version, '2.1.0') == -1:
+            if verbose:
+                print(f'Migrating sim from version {sim.version} to version {cvv.__version__}')
+                print('Note: updating lognormal stds to restore previous behavior; see v2.1.0 changelog for details')
+            migrate_lognormal(sim.pars, verbose=verbose)
+
+        # Migration from <3.0.0 to 3.0.0
+        if sc.compareversions(sim.version, '3.0.0') == -1:
+            if verbose:
+                print(f'Migrating sim from version {sim.version} to version {cvv.__version__}')
+                print('Adding strain parameters')
+            migrate_strains(sim.pars, verbose=verbose)
+
+    # Migrations for People
+    elif isinstance(obj, cvb.BasePeople): # pragma: no cover
+        ppl = obj
+        if not hasattr(ppl, 'version'): # For people prior to 2.0
+            if verbose: print(f'Migrating people from version <2.0 to version {cvv.__version__}')
+            cvb.set_metadata(ppl) # Set all metadata
+
+    # Migrations for MultiSims -- use recursion
+    elif isinstance(obj, cvr.MultiSim):
+        msim = obj
+        msim.base_sim = migrate(msim.base_sim, update=update)
+        msim.sims = [migrate(sim, update=update) for sim in msim.sims]
+        if not hasattr(msim, 'version'): # For msims prior to 2.0
+            if verbose: print(f'Migrating multisim from version <2.0 to version {cvv.__version__}')
+            cvb.set_metadata(msim) # Set all metadata
+            msim.label = None
+
+    # Migrations for Scenarios
+    elif isinstance(obj, cvr.Scenarios):
+        scens = obj
+        scens.base_sim = migrate(scens.base_sim, update=update)
+        for key,simlist in scens.sims.items():
+            scens.sims[key] = [migrate(sim, update=update) for sim in simlist] # Nested loop
+        if not hasattr(scens, 'version'): # For scenarios prior to 2.0
+            if verbose: print(f'Migrating scenarios from version <2.0 to version {cvv.__version__}')
+            cvb.set_metadata(scens) # Set all metadata
+            scens.label = None
+
+    # Unreconized object type
+    else:
+        errormsg = f'Object {obj} of type {type(obj)} is not understood and cannot be migrated: must be a sim, multisim, scenario, or people object'
+        if die:
+            raise TypeError(errormsg)
+        elif verbose: # pragma: no cover
+            print(errormsg)
+            return
+
+
+    # If requested, update the stored version to the current version
+    if update:
+        obj.version = cvv.__version__
+
+    return obj
 
 
 
@@ -348,7 +424,7 @@ def git_info(filename=None, check=False, comments=None, old_info=None, die=False
             old_info = sc.loadjson(filename, **kwargs)
         string = ''
         old_cv_info = old_info['covasim'] if 'covasim' in old_info else old_info
-        if cv_info != old_cv_info:
+        if cv_info != old_cv_info: # pragma: no cover
             string = f'Git information differs: {cv_info} vs. {old_cv_info}'
             if die:
                 raise ValueError(string)
@@ -433,7 +509,7 @@ def get_version_pars(version, verbose=True):
         Dictionary of parameters from that version
     '''
 
-    # Define mappings for available sets of parameters -- from the changelog
+    # Define mappings for available sets of parameters -- note that this must be manually updated from the changelog
     match_map = {
         '0.30.4': ['0.30.4'],
         '0.31.0': ['0.31.0'],
@@ -446,10 +522,10 @@ def get_version_pars(version, verbose=True):
         '1.2.0': [f'1.2.{i}' for i in range(4)],
         '1.3.0': [f'1.3.{i}' for i in range(6)],
         '1.4.0': [f'1.4.{i}' for i in range(9)],
-        '1.5.0': [f'1.5.{i}' for i in range(4)],
-        '1.6.0': [f'1.6.{i}' for i in range(2)],
-        '1.7.0': [f'1.7.{i}' for i in range(7)],
-        '2.0.0': [f'2.0.{i}' for i in range(3)],
+        '1.5.0': [f'1.5.{i}' for i in range(4)] + [f'1.6.{i}' for i in range(2)] + [f'1.7.{i}' for i in range(7)],
+        '2.0.0': [f'2.0.{i}' for i in range(5)] + ['2.1.0'],
+        '2.1.1': [f'2.1.{i}' for i in range(1,3)],
+        '3.0.0': ['3.0.0'],
     }
 
     # Find and check the match
@@ -506,6 +582,7 @@ def get_png_metadata(filename, output=False):
         return
 
 
+
 #%% Simulation/statistics functions
 
 __all__ += ['get_doubling_time', 'poisson_test', 'compute_gof']
@@ -540,7 +617,7 @@ def get_doubling_time(sim, series=None, interval=None, start_day=None, end_day=N
 
     # Validate inputs: interval
     if interval is not None:
-        if len(interval) != 2:
+        if len(interval) != 2: # pragma: no cover
             sc.printv(f"Interval should be a list/array/tuple of length 2, not {len(interval)}. Resetting to length of series.", 1, verbose)
             interval = [0,len(series)]
         start_day, end_day = interval[0], interval[1]
@@ -552,12 +629,12 @@ def get_doubling_time(sim, series=None, interval=None, start_day=None, end_day=N
 
     # Deal with moving window
     if moving_window is not None:
-        if not sc.isnumber(moving_window):
+        if not sc.isnumber(moving_window): # pragma: no cover
             sc.printv("Moving window should be an integer; ignoring and calculating single result", 1, verbose)
             doubling_time = get_doubling_time(sim, series=series, start_day=start_day, end_day=end_day, moving_window=None, exp_approx=exp_approx)
 
         else:
-            if not isinstance(moving_window,int):
+            if not isinstance(moving_window,int): # pragma: no cover
                 sc.printv(f"Moving window should be an integer; recasting {moving_window} the nearest integer... ", 1, verbose)
                 moving_window = int(moving_window)
             if moving_window < 2:
