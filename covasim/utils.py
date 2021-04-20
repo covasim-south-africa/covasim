@@ -1,5 +1,8 @@
 '''
-Numerical utilities for running Covasim
+Numerical utilities for running Covasim.
+
+These include the viral load, transmissibility, and infection calculations
+at the heart of the integration loop.
 '''
 
 #%% Housekeeping
@@ -76,28 +79,37 @@ def compute_viral_load(t,     time_start, time_recovered, time_dead,  frac_time,
     return load
 
 
-@nb.njit(            (nbfloat[:], nbfloat[:], nbbool[:], nbbool[:], nbfloat,    nbfloat[:], nbbool[:], nbbool[:], nbbool[:], nbfloat,      nbfloat,    nbfloat), cache=cache, parallel=safe_parallel)
-def compute_trans_sus(rel_trans,  rel_sus,    inf,       sus,       beta_layer, viral_load, symp,      diag,      quar,      asymp_factor, iso_factor, quar_factor): # pragma: no cover
+@nb.njit(            (nbfloat[:], nbfloat[:], nbbool[:], nbbool[:], nbfloat,    nbfloat[:], nbbool[:], nbbool[:], nbbool[:], nbfloat,      nbfloat,    nbfloat,     nbfloat[:]), cache=cache, parallel=safe_parallel)
+def compute_trans_sus(rel_trans,  rel_sus,    inf,       sus,       beta_layer, viral_load, symp,      diag,      quar,      asymp_factor, iso_factor, quar_factor, immunity_factors): # pragma: no cover
     ''' Calculate relative transmissibility and susceptibility '''
     f_asymp   =  symp + ~symp * asymp_factor # Asymptomatic factor, changes e.g. [0,1] with a factor of 0.8 to [0.8,1.0]
     f_iso     = ~diag +  diag * iso_factor # Isolation factor, changes e.g. [0,1] with a factor of 0.2 to [1,0.2]
     f_quar    = ~quar +  quar * quar_factor # Quarantine, changes e.g. [0,1] with a factor of 0.5 to [1,0.5]
     rel_trans = rel_trans * inf * f_quar * f_asymp * f_iso * beta_layer * viral_load # Recalculate transmissibility
-    rel_sus   = rel_sus   * sus * f_quar # Recalculate susceptibility
+    rel_sus   = rel_sus * sus * f_quar * (1-immunity_factors) # Recalculate susceptibility
     return rel_trans, rel_sus
 
 
 @nb.njit(             (nbfloat,  nbint[:], nbint[:],  nbfloat[:],  nbfloat[:], nbfloat[:]), cache=cache, parallel=rand_parallel)
 def compute_infections(beta,     sources,  targets,   layer_betas, rel_trans,  rel_sus): # pragma: no cover
-    ''' The heaviest step of the model -- figure out who gets infected on this timestep. Cannot be parallelized since random numbers are used '''
-    betas           = beta * layer_betas  * rel_trans[sources] * rel_sus[targets] # Calculate the raw transmission probabilities
-    nonzero_inds    = betas.nonzero()[0] # Find nonzero entries
-    nonzero_betas   = betas[nonzero_inds] # Remove zero entries from beta
-    nonzero_sources = sources[nonzero_inds] # Remove zero entries from the sources
-    nonzero_targets = targets[nonzero_inds] # Remove zero entries from the targets
-    transmissions   = (np.random.random(len(nonzero_betas)) < nonzero_betas).nonzero()[0] # Compute the actual infections!
-    source_inds     = nonzero_sources[transmissions]
-    target_inds     = nonzero_targets[transmissions] # Filter the targets on the actual infections
+    '''
+    Compute who infects whom
+
+    The heaviest step of the model, taking about 50% of the total time -- figure
+    out who gets infected on this timestep. Cannot be easily parallelized since
+    random numbers are used.
+    '''
+    source_trans     = rel_trans[sources] # Pull out the transmissibility of the sources (0 for non-infectious people)
+    inf_inds         = source_trans.nonzero()[0] # Infectious indices -- remove noninfectious people
+    betas            = beta * layer_betas[inf_inds] * source_trans[inf_inds] * rel_sus[targets[inf_inds]] # Calculate the raw transmission probabilities
+    nonzero_inds     = betas.nonzero()[0] # Find nonzero entries
+    nonzero_inf_inds = inf_inds[nonzero_inds] # Map onto original indices
+    nonzero_betas    = betas[nonzero_inds] # Remove zero entries from beta
+    nonzero_sources  = sources[nonzero_inf_inds] # Remove zero entries from the sources
+    nonzero_targets  = targets[nonzero_inf_inds] # Remove zero entries from the targets
+    transmissions    = (np.random.random(len(nonzero_betas)) < nonzero_betas).nonzero()[0] # Compute the actual infections!
+    source_inds      = nonzero_sources[transmissions]
+    target_inds      = nonzero_targets[transmissions] # Filter the targets on the actual infections
     return source_inds, target_inds
 
 
@@ -118,6 +130,7 @@ def find_contacts(p1, p2, inds): # pragma: no cover
         if p2[i] in inds:
             pairing_partners.add(p1[i])
     return pairing_partners
+
 
 
 #%% Sampling and seed methods
@@ -168,33 +181,38 @@ def sample(dist=None, par1=None, par2=None, size=None, **kwargs):
         the mean.
     '''
 
+    # Some of these have aliases, but these are the "official" names
     choices = [
         'uniform',
         'normal',
-        'lognormal',
         'normal_pos',
         'normal_int',
+        'lognormal',
         'lognormal_int',
         'poisson',
         'neg_binomial',
-        ]
+    ]
+
+    # Ensure it's an integer
+    if size is not None:
+        size = int(size)
 
     # Compute distribution parameters and draw samples
     # NB, if adding a new distribution, also add to choices above
-    if   dist == 'uniform':       samples = np.random.uniform(low=par1, high=par2, size=size, **kwargs)
-    elif dist == 'normal':        samples = np.random.normal(loc=par1, scale=par2, size=size, **kwargs)
-    elif dist == 'normal_pos':    samples = np.abs(np.random.normal(loc=par1, scale=par2, size=size, **kwargs))
-    elif dist == 'normal_int':    samples = np.round(np.abs(np.random.normal(loc=par1, scale=par2, size=size, **kwargs)))
-    elif dist == 'poisson':       samples = n_poisson(rate=par1, n=size, **kwargs) # Use Numba version below for speed
-    elif dist == 'neg_binomial':  samples = n_neg_binomial(rate=par1, dispersion=par2, n=size, **kwargs) # Use custom version below
-    elif dist in ['lognormal', 'lognormal_int']:
+    if   dist in ['unif', 'uniform']: samples = np.random.uniform(low=par1, high=par2, size=size, **kwargs)
+    elif dist in ['norm', 'normal']:  samples = np.random.normal(loc=par1, scale=par2, size=size, **kwargs)
+    elif dist == 'normal_pos':        samples = np.abs(np.random.normal(loc=par1, scale=par2, size=size, **kwargs))
+    elif dist == 'normal_int':        samples = np.round(np.abs(np.random.normal(loc=par1, scale=par2, size=size, **kwargs)))
+    elif dist == 'poisson':           samples = n_poisson(rate=par1, n=size, **kwargs) # Use Numba version below for speed
+    elif dist == 'neg_binomial':      samples = n_neg_binomial(rate=par1, dispersion=par2, n=size, **kwargs) # Use custom version below
+    elif dist in ['lognorm', 'lognormal', 'lognorm_int', 'lognormal_int']:
         if par1>0:
-            mean  = np.log(par1**2 / np.sqrt(par2 + par1**2)) # Computes the mean of the underlying normal distribution
-            sigma = np.sqrt(np.log(par2/par1**2 + 1)) # Computes sigma for the underlying normal distribution
+            mean  = np.log(par1**2 / np.sqrt(par2**2 + par1**2)) # Computes the mean of the underlying normal distribution
+            sigma = np.sqrt(np.log(par2**2/par1**2 + 1)) # Computes sigma for the underlying normal distribution
             samples = np.random.lognormal(mean=mean, sigma=sigma, size=size, **kwargs)
         else:
             samples = np.zeros(size)
-        if dist == 'lognormal_int':
+        if '_int' in dist:
             samples = np.round(samples)
     else:
         choicestr = '\n'.join(choices)
@@ -202,6 +220,7 @@ def sample(dist=None, par1=None, par2=None, size=None, **kwargs):
         raise NotImplementedError(errormsg)
 
     return samples
+
 
 
 def get_pdf(dist=None, par1=None, par2=None):
@@ -452,9 +471,9 @@ def choose_w(probs, n, unique=True): # No performance gain from Numba
 
 #%% Simple array operations
 
-__all__ += ['true',   'false',   'defined', 'undefined',
-            'itrue',  'ifalse',  'idefined',
-            'itruei', 'ifalsei', 'idefinedi']
+__all__ += ['true',   'false',   'defined',   'undefined',
+            'itrue',  'ifalse',  'idefined',  'iundefined',
+            'itruei', 'ifalsei', 'idefinedi', 'iundefinedi']
 
 
 def true(arr):
@@ -467,7 +486,7 @@ def true(arr):
 
     **Example**::
 
-        inds = cv.true(np.array([1,0,0,1,1,0,1]))
+        inds = cv.true(np.array([1,0,0,1,1,0,1])) # Returns array([0, 3, 4, 6])
     '''
     return arr.nonzero()[0]
 
@@ -483,7 +502,7 @@ def false(arr):
 
         inds = cv.false(np.array([1,0,0,1,1,0,1]))
     '''
-    return (~arr).nonzero()[0]
+    return np.logical_not(arr).nonzero()[0]
 
 
 def defined(arr):
@@ -541,12 +560,12 @@ def ifalse(arr, inds):
 
         inds = cv.ifalse(np.array([True,False,True,True]), inds=np.array([5,22,47,93]))
     '''
-    return inds[~arr]
+    return inds[np.logical_not(arr)]
 
 
 def idefined(arr, inds):
     '''
-    Returns the indices that are true in the array -- name is short for indices[defined]
+    Returns the indices that are defined in the array -- name is short for indices[defined]
 
     Args:
         arr (array): any array, used as a filter
@@ -557,6 +576,22 @@ def idefined(arr, inds):
         inds = cv.idefined(np.array([3,np.nan,np.nan,4]), inds=np.array([5,22,47,93]))
     '''
     return inds[~np.isnan(arr)]
+
+
+def iundefined(arr, inds):
+    '''
+    Returns the indices that are undefined in the array -- name is short for indices[undefined]
+
+    Args:
+        arr (array): any array, used as a filter
+        inds (array): any other array (usually, an array of indices) of the same size
+
+    **Example**::
+
+        inds = cv.iundefined(np.array([3,np.nan,np.nan,4]), inds=np.array([5,22,47,93]))
+    '''
+    return inds[np.isnan(arr)]
+
 
 
 def itruei(arr, inds):
@@ -586,7 +621,7 @@ def ifalsei(arr, inds):
 
         inds = cv.ifalsei(np.array([True,False,True,True,False,False,True,False]), inds=np.array([0,1,3,5]))
     '''
-    return inds[~arr[inds]]
+    return inds[np.logical_not(arr[inds])]
 
 
 def idefinedi(arr, inds):
@@ -602,3 +637,18 @@ def idefinedi(arr, inds):
         inds = cv.idefinedi(np.array([4,np.nan,0,np.nan,np.nan,4,7,4,np.nan]), inds=np.array([0,1,3,5]))
     '''
     return inds[~np.isnan(arr[inds])]
+
+
+def iundefinedi(arr, inds):
+    '''
+    Returns the indices that are undefined in the array -- name is short for indices[defined[indices]]
+
+    Args:
+        arr (array): any array, used as a filter
+        inds (array): an array of indices for the original array
+
+    **Example**::
+
+        inds = cv.iundefinedi(np.array([4,np.nan,0,np.nan,np.nan,4,7,4,np.nan]), inds=np.array([0,1,3,5]))
+    '''
+    return inds[np.isnan(arr[inds])]
